@@ -579,6 +579,12 @@ class Character {
         // Nearby reaction
         this.reacting = false;
         this.reactTimer = 0;
+        // Per-character gyro personality — breaks the slab effect
+        this.gyroMass    = rand(0.3, 1.8);                    // heavy vs floaty
+        this.gyroRotDir  = Math.random() > 0.5 ? 1 : -1;     // spin CW or CCW
+        this.gyroRotAmt  = rand(0.008, 0.06);                 // how much it spins
+        this.gyroXNudge  = rand(-0.15, 0.15);                 // personal gravity bias X
+        this.gyroYNudge  = rand(-0.08, 0.08);                 // personal gravity bias Y
     }
 
     init(W, H) {
@@ -657,12 +663,14 @@ class Character {
         }
 
         if (!this.dragging) {
-            // Accelerometer gravity — gentle nudge, not a shove
+            // Accelerometer gravity — each character has its own mass + bias
             if (gyroActive) {
-                this.vx += gravityX * GRAVITY_FORCE * dt;
-                this.vy += gravityY * GRAVITY_FORCE * dt;
-                // Very subtle spin
-                this.vr += gravityX * dt * 0.04;
+                const gx = (gravityX + this.gyroXNudge) * this.gyroMass;
+                const gy = (gravityY + this.gyroYNudge) * this.gyroMass;
+                this.vx += gx * GRAVITY_FORCE * dt;
+                this.vy += gy * GRAVITY_FORCE * dt;
+                // Each character spins its own way
+                this.vr += gravityX * dt * this.gyroRotAmt * this.gyroRotDir;
             }
 
             // Heavy friction when gyro active — characters wade through tar
