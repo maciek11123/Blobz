@@ -657,19 +657,26 @@ class Character {
         }
 
         if (!this.dragging) {
-            // Accelerometer gravity
+            // Accelerometer gravity — gentle nudge, not a shove
             if (gyroActive) {
                 this.vx += gravityX * GRAVITY_FORCE * dt;
                 this.vy += gravityY * GRAVITY_FORCE * dt;
-                // Add spin from lateral gravity
-                this.vr += gravityX * dt * 0.3;
+                // Very subtle spin
+                this.vr += gravityX * dt * 0.04;
             }
 
-            // Friction (slightly higher when gravity active to prevent chaos)
-            const fric = gyroActive ? 0.93 : 0.96;
+            // Heavy friction when gyro active — characters wade through tar
+            const fric = gyroActive ? 0.97 : 0.96;
             this.vx *= fric;
             this.vy *= fric;
             this.vr *= 0.94;
+
+            // Velocity cap so gyro can never cause explosive movement
+            if (gyroActive) {
+                const spd = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                const MAX_SPD = 2.5;
+                if (spd > MAX_SPD) { this.vx *= MAX_SPD / spd; this.vy *= MAX_SPD / spd; }
+            }
 
             // Apply velocity
             this.x += this.vx;
@@ -1359,19 +1366,16 @@ window.addEventListener('resize', () => {
 // ===== ACCELEROMETER / GYROSCOPE GRAVITY =====
 let gravityX = 0, gravityY = 0;
 let gyroActive = false;
-const GRAVITY_FORCE = 500; // px/s²
+const GRAVITY_FORCE = 60; // was 500 — tar-slow
 
-// Low-pass filter state
+// Low-pass filter state — very heavy smoothing
 let lpGX = 0, lpGY = 0;
-const LP_ALPHA = 0.15; // smoothing (lower = smoother/slower)
+const LP_ALPHA = 0.025; // was 0.15 — lower = sluggier
 
 // Beta calibration: when phone is upright in portrait, beta ≈ 90°
-// We want beta=90 → no vertical gravity, so subtract 90 from beta
 const BETA_UPRIGHT = 90;
 
 function handleOrientation(e) {
-    // gamma: left/right tilt -90..90 (0 = straight up)
-    // beta:  front/back tilt -180..180 (90 = phone upright facing you)
     if (e.gamma === null && e.beta === null) return;
     const gamma = e.gamma !== null ? e.gamma : 0;
     const beta  = e.beta  !== null ? e.beta  : 90;
@@ -1383,43 +1387,41 @@ function handleOrientation(e) {
     } else if (typeof window.orientation === 'number') {
         angle = window.orientation;
     }
-    // Normalize to 0/90/180/270
     angle = ((Math.round(angle / 90) * 90) % 360 + 360) % 360;
 
     let gx, gy;
-    // Remap axes based on physical screen rotation
     switch (angle) {
         case 90:   // landscape left
-            gx =  (beta  - BETA_UPRIGHT);
-            gy = -gamma;
-            break;
-        case 270:  // landscape right
-            gx = -(beta  - BETA_UPRIGHT);
+            gx =  (beta - BETA_UPRIGHT);
             gy =  gamma;
             break;
+        case 270:  // landscape right
+            gx = -(beta - BETA_UPRIGHT);
+            gy = -gamma;
+            break;
         case 180:  // portrait upside down
-            gx = -gamma;
+            gx =  gamma;
             gy = -(beta - BETA_UPRIGHT);
             break;
-        default:   // portrait (0)
-            gx =  gamma;
+        default:   // portrait — negate gamma (fixes mirror)
+            gx = -gamma;
             gy =  (beta - BETA_UPRIGHT);
             break;
     }
 
-    // Clamp to ±60° range then normalize to -1..1
-    const rawGX = Math.max(-1, Math.min(1, gx / 60));
-    const rawGY = Math.max(-1, Math.min(1, gy / 60));
+    // Normalize against a wider tilt range so you really have to lean
+    const rawGX = Math.max(-1, Math.min(1, gx / 40));
+    const rawGY = Math.max(-1, Math.min(1, gy / 40));
 
-    // Low-pass filter to remove jitter
+    // Very heavy low-pass — feels like moving through tar
     lpGX += (rawGX - lpGX) * LP_ALPHA;
     lpGY += (rawGY - lpGY) * LP_ALPHA;
 
-    // Dead zone: ignore tiny tilts (phone resting on table wobble)
-    gravityX = Math.abs(lpGX) > 0.04 ? lpGX : 0;
-    gravityY = Math.abs(lpGY) > 0.04 ? lpGY : 0;
+    // Larger dead zone — ignore micro-tremors
+    gravityX = Math.abs(lpGX) > 0.08 ? lpGX : 0;
+    gravityY = Math.abs(lpGY) > 0.08 ? lpGY : 0;
 
-    if (!gyroActive && (Math.abs(gx) > 2 || Math.abs(gy) > 2)) {
+    if (!gyroActive && (Math.abs(gx) > 3 || Math.abs(gy) > 3)) {
         gyroActive = true;
         showGyroHint();
     }
