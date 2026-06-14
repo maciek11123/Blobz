@@ -8,8 +8,12 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body,html{width:100%;height:100%;overflow:hidden;background:#f4edd9;touch-action:none;-webkit-user-select:none;user-select:none}
 canvas{display:block;width:100%;height:100%}
-#handBtn{position:fixed;bottom:16px;right:16px;z-index:10;width:48px;height:48px;border-radius:50%;border:none;background:rgba(0,0,0,0.6);color:#fff;font-size:22px;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);transition:background .2s}
+#handBtn,#muteBtn{position:fixed;bottom:16px;z-index:10;width:48px;height:48px;border-radius:50%;border:none;background:rgba(0,0,0,0.6);color:#fff;font-size:22px;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);transition:background .2s,transform .15s}
+#handBtn{right:16px}
+#muteBtn{right:72px}
 #handBtn.active{background:rgba(40,180,99,0.8)}
+#muteBtn.muted{background:rgba(180,40,40,0.7)}
+#handBtn:active,#muteBtn:active{transform:scale(0.9)}
 #webcamWrap{position:fixed;bottom:72px;right:16px;z-index:10;width:160px;height:120px;border-radius:12px;overflow:hidden;display:none;border:2px solid rgba(255,255,255,0.3);box-shadow:0 4px 20px rgba(0,0,0,0.3)}
 #webcamWrap video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 </style>
@@ -17,6 +21,7 @@ canvas{display:block;width:100%;height:100%}
 <body>
 <canvas id="c"></canvas>
 <button id="handBtn" title="Toggle Hand Tracking">✋</button>
+<button id="muteBtn" title="Toggle Sound">🔊</button>
 <div id="webcamWrap"><video id="webcam" playsinline autoplay muted></video></div>
 <script>
 // ===== CANVAS SETUP =====
@@ -31,7 +36,7 @@ function resize() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 resize();
-window.addEventListener('resize', resize);
+// resize listener moved to after character init (handles canvas + position scaling)
 
 // ===== HELPERS =====
 function lerpColor(a, b, t) {
@@ -52,6 +57,274 @@ function createRadGrad(ctx, cx, cy, r, stops) {
     return g;
 }
 function rand(a, b) { return a + Math.random() * (b - a); }
+
+// ===== SOUND ENGINE (Web Audio API) =====
+const SFX = (() => {
+    let ctx = null, master = null, musicGain = null, sfxGain = null;
+    let muted = false, started = false;
+    let musicNodes = [];
+    const pentatonic = [261.6, 293.7, 329.6, 392.0, 440.0, 523.3, 587.3, 659.3];
+
+    function init() {
+        if (ctx) return;
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+        master = ctx.createGain();
+        master.gain.value = 1;
+        master.connect(ctx.destination);
+        // SFX bus
+        sfxGain = ctx.createGain();
+        sfxGain.gain.value = 0.35;
+        sfxGain.connect(master);
+        // Music bus
+        musicGain = ctx.createGain();
+        musicGain.gain.value = 0;
+        musicGain.connect(master);
+    }
+
+    function unlock() {
+        if (started) return;
+        init();
+        if (ctx.state === 'suspended') ctx.resume();
+        started = true;
+        startMusic();
+    }
+
+    // --- Background Music: ambient pentatonic pad ---
+    function startMusic() {
+        // Warm pad: 2 detuned saws through a low-pass filter
+        const padFreqs = [130.8, 196.0, 261.6]; // C3, G3, C4 chord
+        padFreqs.forEach((f, i) => {
+            const o1 = ctx.createOscillator();
+            const o2 = ctx.createOscillator();
+            o1.type = 'sine'; o2.type = 'triangle';
+            o1.frequency.value = f; o2.frequency.value = f * 1.003;
+            const g = ctx.createGain();
+            g.gain.value = 0.06;
+            const filt = ctx.createBiquadFilter();
+            filt.type = 'lowpass'; filt.frequency.value = 400 + i * 80; filt.Q.value = 0.7;
+            o1.connect(filt); o2.connect(filt); filt.connect(g); g.connect(musicGain);
+            o1.start(); o2.start();
+            musicNodes.push(o1, o2);
+        });
+
+        // Fade music in gently
+        musicGain.gain.setTargetAtTime(0.55, ctx.currentTime, 3);
+
+        // Random gentle melody plinks
+        function schedulePlink() {
+            if (muted || !started) { setTimeout(schedulePlink, 2000); return; }
+            const delay = rand(2.5, 6.5);
+            setTimeout(() => {
+                if (!ctx || muted) { schedulePlink(); return; }
+                const freq = pentatonic[Math.floor(Math.random() * pentatonic.length)];
+                const now = ctx.currentTime;
+                const o = ctx.createOscillator();
+                o.type = 'sine';
+                o.frequency.value = freq;
+                const g = ctx.createGain();
+                g.gain.setValueAtTime(0, now);
+                g.gain.linearRampToValueAtTime(0.07, now + 0.05);
+                g.gain.exponentialRampToValueAtTime(0.001, now + 1.8);
+                const filt = ctx.createBiquadFilter();
+                filt.type = 'lowpass'; filt.frequency.value = 1200;
+                o.connect(filt); filt.connect(g); g.connect(musicGain);
+                o.start(now); o.stop(now + 2);
+                schedulePlink();
+            }, delay * 1000);
+        }
+        schedulePlink();
+
+        // Subtle low rumble/warmth
+        const noise = ctx.createBufferSource();
+        const nBuf = ctx.createBuffer(1, ctx.sampleRate * 4, ctx.sampleRate);
+        const nData = nBuf.getChannelData(0);
+        for (let i = 0; i < nData.length; i++) nData[i] = (Math.random() * 2 - 1) * 0.3;
+        noise.buffer = nBuf; noise.loop = true;
+        const nFilt = ctx.createBiquadFilter();
+        nFilt.type = 'lowpass'; nFilt.frequency.value = 120;
+        const nGain = ctx.createGain();
+        nGain.gain.value = 0.04;
+        noise.connect(nFilt); nFilt.connect(nGain); nGain.connect(musicGain);
+        noise.start();
+        musicNodes.push(noise);
+    }
+
+    // --- Sound Effects ---
+
+    function playTone(freq, dur, vol, type, attack, filterFreq) {
+        if (!ctx || muted) return;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = type || 'sine';
+        o.frequency.value = freq;
+        const g = ctx.createGain();
+        const atk = attack || 0.01;
+        g.gain.setValueAtTime(0, now);
+        g.gain.linearRampToValueAtTime(vol || 0.15, now + atk);
+        g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+        if (filterFreq) {
+            const f = ctx.createBiquadFilter();
+            f.type = 'lowpass'; f.frequency.value = filterFreq;
+            o.connect(f); f.connect(g);
+        } else {
+            o.connect(g);
+        }
+        g.connect(sfxGain);
+        o.start(now); o.stop(now + dur);
+    }
+
+    // Pick up: cheerful upward chirp
+    function pickUp() {
+        if (!ctx || muted) return;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(350, now);
+        o.frequency.exponentialRampToValueAtTime(900, now + 0.12);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.18, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+        o.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.22);
+        // soft pop click
+        const click = ctx.createOscillator();
+        click.type = 'square';
+        click.frequency.value = 1200;
+        const cg = ctx.createGain();
+        cg.gain.setValueAtTime(0.06, now);
+        cg.gain.exponentialRampToValueAtTime(0.001, now + 0.03);
+        const cf = ctx.createBiquadFilter();
+        cf.type = 'lowpass'; cf.frequency.value = 2000;
+        click.connect(cf); cf.connect(cg); cg.connect(sfxGain);
+        click.start(now); click.stop(now + 0.04);
+    }
+
+    // Drop: downward plop
+    function drop() {
+        if (!ctx || muted) return;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(600, now);
+        o.frequency.exponentialRampToValueAtTime(180, now + 0.15);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.2, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+        o.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.32);
+    }
+
+    // Collision: soft wooden knock
+    function bump() {
+        if (!ctx || muted) return;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'triangle';
+        o.frequency.setValueAtTime(220 + Math.random() * 60, now);
+        o.frequency.exponentialRampToValueAtTime(120, now + 0.06);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.1, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+        const f = ctx.createBiquadFilter();
+        f.type = 'lowpass'; f.frequency.value = 800;
+        o.connect(f); f.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.12);
+    }
+
+    // Wall bounce: muted thud
+    function wallHit() {
+        if (!ctx || muted) return;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(150, now);
+        o.frequency.exponentialRampToValueAtTime(60, now + 0.08);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.12, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        o.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.17);
+    }
+
+    // Sparkle: tiny bell chime
+    function sparkle() {
+        if (!ctx || muted) return;
+        const freq = pentatonic[Math.floor(Math.random() * pentatonic.length)] * 2;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.value = freq;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.04, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+        o.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.45);
+    }
+
+    // Giggle: rapid playful notes
+    function giggle() {
+        if (!ctx || muted) return;
+        const baseFreq = 500 + Math.random() * 200;
+        for (let i = 0; i < 3; i++) {
+            const now = ctx.currentTime + i * 0.07;
+            const o = ctx.createOscillator();
+            o.type = 'sine';
+            o.frequency.setValueAtTime(baseFreq + i * 80, now);
+            o.frequency.exponentialRampToValueAtTime(baseFreq + i * 80 + 100, now + 0.04);
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(0.08, now);
+            g.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+            o.connect(g); g.connect(sfxGain);
+            o.start(now); o.stop(now + 0.1);
+        }
+    }
+
+    // Drag wobble: pitch-proportional to speed
+    let lastDragSound = 0;
+    function dragWobble(speed) {
+        if (!ctx || muted) return;
+        const now = performance.now();
+        if (now - lastDragSound < 80) return;
+        lastDragSound = now;
+        const t = ctx.currentTime;
+        const freq = 200 + speed * 30;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.value = Math.min(freq, 800);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(Math.min(speed * 0.008, 0.06), t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+        const f = ctx.createBiquadFilter();
+        f.type = 'lowpass'; f.frequency.value = 1000;
+        o.connect(f); f.connect(g); g.connect(sfxGain);
+        o.start(t); o.stop(t + 0.1);
+    }
+
+    // Surprised: quick "oh!" sound
+    function surprised() {
+        if (!ctx || muted) return;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(400, now);
+        o.frequency.exponentialRampToValueAtTime(600, now + 0.05);
+        o.frequency.exponentialRampToValueAtTime(500, now + 0.12);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.06, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+        o.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.2);
+    }
+
+    function toggleMute() {
+        muted = !muted;
+        if (master) master.gain.setTargetAtTime(muted ? 0 : 1, ctx.currentTime, 0.1);
+        return muted;
+    }
+    function isMuted() { return muted; }
+
+    return { unlock, pickUp, drop, bump, wallHit, sparkle, giggle, dragWobble, surprised, toggleMute, isMuted };
+})();
 
 // ===== SPARKLE PARTICLES =====
 let sparkles = [];
@@ -271,6 +544,7 @@ class Character {
     constructor(def) {
         this.id = def.id;
         this.gx = def.gx; this.gy = def.gy;
+        this.baseSize = def.sz;
         this.size = def.sz;
         this.type = def.type;
         this.colorDef = def.color;
@@ -308,10 +582,31 @@ class Character {
     }
 
     init(W, H) {
-        const cols = 10, rows = 5.5;
-        const cw = W / cols, ch = H / rows;
-        this.x = this.gx * cw + cw * 0.3;
-        this.y = this.gy * ch + ch * 0.3;
+        const gridW = 10, gridH = 5.5;
+        const contentAR = gridW / gridH;
+        const screenAR = W / H;
+        let cw, ch, offX = 0, offY = 0;
+
+        if (screenAR > contentAR) {
+            // Screen wider than content (landscape / desktop mode)
+            // → uniform cells fitted to height, center horizontally
+            const cell = H / gridH;
+            cw = cell; ch = cell;
+            offX = (W - gridW * cell) / 2;
+        } else {
+            // Portrait or narrow: stretch to fill (original behavior)
+            cw = W / gridW;
+            ch = H / gridH;
+        }
+
+        this.x = this.gx * cw + cw * 0.3 + offX;
+        this.y = this.gy * ch + ch * 0.3 + offY;
+
+        // Scale size: original sizes designed for cw≈108 (1080px/10)
+        // On portrait phones cw≈41 → keep original sizes (cap at 1.0)
+        // On wider screens the uniform cell grows → scale up to fill
+        const effectiveCell = Math.min(cw, ch);
+        this.size = this.baseSize * Math.max(effectiveCell / 108, 1.0);
     }
 
     getRadius() { return this.size / 2; }
@@ -381,10 +676,11 @@ class Character {
 
             // Wall bounce
             const r = this.getRadius();
-            if (this.x - r < 0) { this.x = r; this.vx = Math.abs(this.vx) * 0.5; this.targetScaleX = 0.85; this.targetScaleY = 1.1; }
-            if (this.x + r > W) { this.x = W - r; this.vx = -Math.abs(this.vx) * 0.5; this.targetScaleX = 0.85; this.targetScaleY = 1.1; }
-            if (this.y - r < 0) { this.y = r; this.vy = Math.abs(this.vy) * 0.5; this.targetScaleY = 0.85; this.targetScaleX = 1.1; }
-            if (this.y + r > H) { this.y = H - r; this.vy = -Math.abs(this.vy) * 0.5; this.targetScaleY = 0.85; this.targetScaleX = 1.1; }
+            const wallBounce = 0.5;
+            if (this.x - r < 0) { this.x = r; this.vx = Math.abs(this.vx) * wallBounce; this.targetScaleX = 0.85; this.targetScaleY = 1.1; if (Math.abs(this.vx) > 1) SFX.wallHit(); }
+            if (this.x + r > W) { this.x = W - r; this.vx = -Math.abs(this.vx) * wallBounce; this.targetScaleX = 0.85; this.targetScaleY = 1.1; if (Math.abs(this.vx) > 1) SFX.wallHit(); }
+            if (this.y - r < 0) { this.y = r; this.vy = Math.abs(this.vy) * wallBounce; this.targetScaleY = 0.85; this.targetScaleX = 1.1; if (Math.abs(this.vy) > 1) SFX.wallHit(); }
+            if (this.y + r > H) { this.y = H - r; this.vy = -Math.abs(this.vy) * wallBounce; this.targetScaleY = 0.85; this.targetScaleX = 1.1; if (Math.abs(this.vy) > 1) SFX.wallHit(); }
 
             // Reset target scale toward 1
             this.targetScaleX += (1 - this.targetScaleX) * 3 * dt;
@@ -407,6 +703,7 @@ class Character {
                 if (Math.abs(this.vx) + Math.abs(this.vy) > 2) {
                     this.targetScaleX = 0.9; this.targetScaleY = 1.1;
                     other.targetScaleX = 0.9; other.targetScaleY = 1.1;
+                    SFX.bump();
                 }
             }
         }
@@ -1026,7 +1323,29 @@ function initPositions() {
     chars.forEach(c => c.init(W, H));
 }
 initPositions();
-window.addEventListener('resize', () => { resize(); initPositions(); });
+
+// On resize: scale positions proportionally instead of snapping to grid
+window.addEventListener('resize', () => {
+    const oldW = W, oldH = H;
+    resize();
+    if (oldW > 0 && oldH > 0) {
+        const sx = W / oldW, sy = H / oldH;
+        chars.forEach(c => {
+            c.x *= sx; c.y *= sy;
+            // Recalculate size for new screen
+            const gridW = 10, gridH = 5.5;
+            const screenAR = W / H, contentAR = gridW / gridH;
+            let cw, ch;
+            if (screenAR > contentAR) {
+                const cell = H / gridH; cw = cell; ch = cell;
+            } else {
+                cw = W / gridW; ch = H / gridH;
+            }
+            const effectiveCell = Math.min(cw, ch);
+            c.size = c.baseSize * Math.max(effectiveCell / 108, 1.0);
+        });
+    }
+});
 
 // ===== INPUT HANDLING =====
 let pointers = new Map(); // id -> {x, y, prevX, prevY, char: Character|null}
@@ -1047,6 +1366,7 @@ function findCharAt(x, y) {
 }
 
 function onPointerDown(id, x, y) {
+    SFX.unlock();
     const ch = findCharAt(x, y);
     pointers.set(id, { x, y, prevX: x, prevY: y, char: ch, startTime: performance.now() });
     if (ch) {
@@ -1061,6 +1381,7 @@ function onPointerDown(id, x, y) {
         const maxZ = Math.max(...chars.map(c => c.zIndex));
         ch.zIndex = maxZ + 1;
         spawnSparkles(x, y, 8, `hsl(${rand(30, 60)},100%,70%)`);
+        SFX.pickUp();
     }
 }
 
@@ -1087,9 +1408,11 @@ function onPointerMove(id, x, y) {
         if (speed > 8) {
             ch.emotion = 'laughing'; ch.emotionTimer = 0.5;
             if (Math.random() < 0.3) spawnSparkles(ch.x, ch.y, 3, `hsl(${rand(0, 360)},90%,70%)`);
+            if (Math.random() < 0.2) SFX.giggle();
         } else if (speed > 2) {
             ch.emotion = 'giggle'; ch.emotionTimer = 0.5;
         }
+        if (speed > 1) SFX.dragWobble(speed);
 
         // Nearby character reactions
         chars.forEach(other => {
@@ -1102,6 +1425,7 @@ function onPointerMove(id, x, y) {
                     other.reactTimer = 0.6;
                     other.emotion = 'surprised';
                     other.emotionTimer = 0.6;
+                    SFX.surprised();
                 }
             }
         });
@@ -1119,6 +1443,8 @@ function onPointerUp(id) {
         // Fling
         ch.vx *= 1.5; ch.vy *= 1.5;
         spawnSparkles(ch.x, ch.y, 12, `hsl(${rand(30, 60)},100%,75%)`);
+        SFX.drop();
+        SFX.sparkle();
     }
     pointers.delete(id);
 }
@@ -1230,7 +1556,8 @@ handBtn.addEventListener('click', async () => {
                             const nx = -dx / dist, ny = -dy / dist;
                             ch.vx += nx * 2; ch.vy += ny * 2;
                         }
-                        if (Math.random() < 0.15) spawnSparkles(hp.x, hp.y, 2, `hsl(${rand(180, 300)},80%,70%)`);
+                        if (Math.random() < 0.15) { spawnSparkles(hp.x, hp.y, 2, `hsl(${rand(180, 300)},80%,70%)`); SFX.sparkle(); }
+                        if (Math.random() < 0.1) SFX.giggle();
                     }
                 });
             });
@@ -1258,6 +1585,15 @@ function loadScript(src) {
         document.head.appendChild(s);
     });
 }
+
+// ===== MUTE BUTTON =====
+const muteBtn = document.getElementById('muteBtn');
+muteBtn.addEventListener('click', () => {
+    SFX.unlock();
+    const muted = SFX.toggleMute();
+    muteBtn.textContent = muted ? '🔇' : '🔊';
+    muteBtn.classList.toggle('muted', muted);
+});
 
 // ===== MAIN LOOP =====
 let lastTime = performance.now();
