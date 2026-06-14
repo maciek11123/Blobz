@@ -342,7 +342,7 @@ class Character {
         this.x = this.gx * cw + offX;
         this.y = this.gy * ch + offY;
         const effectiveCell = Math.min(cw, ch);
-        this.size = this.baseSize * Math.max(effectiveCell / 100, 0.3); // Lowered clamp to 0.3
+        this.size = this.baseSize * Math.max(effectiveCell / 100, 0.9);
     }
 
     getRadius() { return this.size / 2; }
@@ -711,7 +711,7 @@ window.addEventListener('resize', () => {
             if (screenAR > contentAR) { const cell = H / gridH; cw = cell; ch = cell; }
             else { cw = W / gridW; ch = H / gridH; }
             const effectiveCell = Math.min(cw, ch);
-            c.size = c.baseSize * Math.max(effectiveCell / 100, 0.3); // Lowered clamp to 0.3
+            c.size = c.baseSize * Math.max(effectiveCell / 100, 0.9);
         });
     }
 });
