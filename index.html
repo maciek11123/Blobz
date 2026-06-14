@@ -1401,19 +1401,19 @@ function handleOrientation(e) {
     switch (angle) {
         case 90:   // landscape left
             gx =  (beta - BETA_UPRIGHT);
-            gy =  gamma;
+            gy =  0;
             break;
         case 270:  // landscape right
             gx = -(beta - BETA_UPRIGHT);
-            gy = -gamma;
+            gy =  0;
             break;
         case 180:  // portrait upside down
             gx =  gamma;
-            gy = -(beta - BETA_UPRIGHT);
+            gy =  0;
             break;
-        default:   // portrait — negate gamma (fixes mirror)
+        default:   // portrait — X only, no forward/back
             gx = -gamma;
-            gy =  (beta - BETA_UPRIGHT);
+            gy =  0;
             break;
     }
 
@@ -1429,7 +1429,7 @@ function handleOrientation(e) {
     gravityX = Math.abs(lpGX) > 0.08 ? lpGX : 0;
     gravityY = Math.abs(lpGY) > 0.08 ? lpGY : 0;
 
-    if (!gyroActive && (Math.abs(gx) > 3 || Math.abs(gy) > 3)) {
+    if (!gyroActive && Math.abs(gx) > 3) {
         gyroActive = true;
         showGyroHint();
     }
